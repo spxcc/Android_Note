@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Android 事件分发 · 知识思维导图</title>
+<!-- 交互式思维导图：markmap 渲染，节点可折叠/展开，画布可缩放平移 -->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f8f9fb;
+  }
+  header {
+    padding: 10px 20px;
+    background: #1f2937;
+    color: #f9fafb;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; font-weight: 600; }
+  header .tip { font-size: 12px; color: #9ca3af; }
+  #mindmap-container {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+  }
+  #mindmap-container svg.markmap { width: 100%; height: 100%; }
+  /* CDN 加载失败时的降级：展示大纲文本 */
+  #fallback {
+    display: none;
+    padding: 20px 28px 40px;
+    max-width: 900px;
+    margin: 0 auto;
+    overflow-y: auto;
+    flex: 1;
+  }
+  #fallback h2 { font-size: 15px; margin: 18px 0 8px; color: #1f2937; }
+  #fallback li { font-size: 13px; line-height: 1.9; color: #374151; }
+  .fallback-note {
+    display: none;
+    background: #fef3c7;
+    color: #92400e;
+    font-size: 12px;
+    padding: 6px 20px;
+  }
+  .fallback-note.show { display: block; }
+  #fallback.show { display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Android 事件分发 · 思维导图</h1>
+  <span class="tip">操作：点击节点折叠/展开 · 滚轮缩放 · 拖拽平移 · 详见复习手册 event-dispatch-core-review.md</span>
+</header>
+<div class="fallback-note" id="fallback-note">
+  思维导图渲染失败（需联网加载 CDN）——已切换为纯文本大纲模式，内容相同。
+</div>
+
+<!-- markmap 容器：内部 markdown 为知识树源文本 -->
+<div class="markmap" id="mindmap-container">
+<script type="text/template">
+---
+markmap:
+  maxWidth: 340
+  initialExpandLevel: -1
+  spacingVertical: 6
+  spacingHorizontal: 90
+  colorFreezeLevel: 2
+---
+
+# Android 事件分发
+
+## 1️⃣ 事件序列模型
+- 一个手势 = DOWN → MOVE… → UP/CANCEL
+- **DOWN 定归属，序列内不换人**
+- 事件跟着归属走，不跟着位置走
+- 屏幕边界
+  - 滑出屏幕 → 系统发 **CANCEL**
+  - 从屏幕外滑入 → 发**全新 DOWN**（新序列）
+
+## 2️⃣ 三大方法
+### dispatchTouchEvent
+- 总调度："我处理 or 往下派"
+- View / ViewGroup 都有
+### onInterceptTouchEvent
+- **仅 ViewGroup**：派发前"抢票"
+- 只在 DOWN 或已有 target 时被询问
+### onTouchEvent
+- 真正干活：按压 / 滚动 / 点击
+- 返回值 = `enabled && (clickable || longClickable)`
+
+## 3️⃣ mFirstTouchTarget 归属链
+### 节点三元组
+- child：谁在当班
+- pointerIdBits：负责哪几根手指（位图）
+- next：下一个当班子 View
+### 为什么是链表不是 List&lt;View&gt;
+- 归属粒度是"手指"，不是"View"
+- 同一 View 多指合并成 1 个节点
+- 节点数 = 正在消费的**不同**子 View 数
+### 四阶段生命周期
+- ① 空闲：null（父容器当普通 View）
+- ② 建立：→ child（DOWN 消费成功）
+- ③ 中途拦截：→ null（先 CANCEL 再摘链）
+- ④ 自然结束：→ null（UP 清链、节点回池）
+### 增删位置
+- 增（唯一入口）：addTouchTarget 头插
+- 删①：clearTouchTargets（UP/CANCEL、新 DOWN）
+- 删②：cancelChild 摘单个（父拦截）
+- 删③：removePointersFromTouchTargets（POINTER_UP 减位图）
+
+## 4️⃣ 拦截机制
+### 判断条件：为什么是 ‖ 不是 &&
+- ‖ = "开局(DOWN)或中途(有 target)都该问"
+- 改成 && → DOWN 恒 false → 恒自吞
+- → **子 View 永远收不到事件**
+### 无 target 时
+- intercepted = true 直接赋值
+- 不调 onInterceptTouchEvent：无对象可抢，纯浪费
+- true 的含义 = "无处可去、必然由我接管"
+### 拦截完整链路
+- 拦 → 给旧 target 发 **CANCEL** → 摘链
+- → 拦截者走 child=null 分支自己接管
+- **从下一拍 MOVE 生效**
+
+## 5️⃣ CANCEL 语义
+### CANCEL vs UP
+- UP = 正常完成 → **触发 performClick**
+- CANCEL = 被外部夺走 → **不触发 click**
+### 若拦截时改发 UP 的两个 Bug
+- 滚动手势误触 item 点击
+- 子父双方都以为手势归自己 → 状态错乱
+### Button 收到 CANCEL 做什么
+- setPressed(false)：关按压高亮
+- removeLongPressCallback()：撤长按
+- 绝不 performClick() → 这按作废
+
+## 6️⃣ 禁拦令
+### requestDisallowInterceptTouchEvent
+- 子调一次 → 逐层上传所有祖先
+- **每个 DOWN 被 resetTouchState 清除** → 新手势必须重设
+- 一拍延迟：下一拍父容器才读到新值
+### cancelAndClearTouchTargets vs resetTouchState
+- 前者管"人"：先发 CANCEL 再清链
+- 后者管"开关"：清禁拦令、复位嵌套滚动轴
+- 顺序：先辞退人，再复位开关
+
+## 7️⃣ 滑动冲突两套解法
+### 外部拦截法（父主导）
+- RecyclerView 状态机
+  - DOWN：放行 + 重置基准
+  - MOVE：破 touchSlop 且 canScroll 才拦
+  - 拦后一直 true 锁定到底
+  - POINTER_UP：切基准到存活手指
+- **事后盖章**原则
+  - scrollByInternal 真滚了才设禁拦令
+  - 不在 DOWN 提前占座
+### 内部拦截法（子主导）
+- DOWN 设禁拦令 → MOVE 判定让权则解禁
+- 收尾必须 return super.dispatchTouchEvent(ev)
+  - return true = 有名无实（内部没建链）
+  - return false = 不声称也不实干
+  - return super = 实干 + 如实上报
+### super 的语义（易错）
+- 调的是**父类(ViewGroup)的方法**，不是父 View
+- 处理自己的子树 → 方向**向下**
+- 类的爸爸(给功法) ≠ 视图的爸爸(是领导)
+
+## 8️⃣ 经典场景
+### RecyclerView 的 item 可点 vs 不可点
+- 不可点：RV 空链 → 自当大 View 直接滚
+- 可点：链建 item 上 → 破 slop 拦截 + CANCEL
+- 轻点触发 click / 拖动滚动优先
+### ViewPager + 横向 RV（实验）
+- **让权**：父 onIntercept 全程 false
+  - RV 自己滚到底，无 CANCEL
+- **拦截**：某拍父 true
+  - RV 收 CANCEL → 父 onTouchEvent 接管翻页
+- 父在 UP 也会被问一次（target 非空）
+
+## 9️⃣ 陷阱清单
+- ‖ 改 && → 子 View 收不到事件
+- return true 不 return super → MOVE 断层
+- super 误当父 View
+- 拦截时发 UP 不发 CANCEL → 误触 click
+- 禁拦令设一次不管 → DOWN 会清零
+- 无 target 期待 onIntercept 被调 → 不会
+</script>
+</div>
+
+<!-- 降级：CDN 不可用时展示纯文本大纲 -->
+<div id="fallback">
+  <h2>1. 事件序列模型</h2>
+  <ul>
+    <li>一个手势 = DOWN → MOVE… → UP/CANCEL；DOWN 定归属，序列内不换人</li>
+    <li>事件跟着归属走，不跟着位置走</li>
+    <li>滑出屏幕 → 系统发 CANCEL；从屏幕外滑入 → 发全新 DOWN（新序列）</li>
+  </ul>
+  <h2>2. 三大方法</h2>
+  <ul>
+    <li>dispatchTouchEvent：总调度，View/ViewGroup 都有</li>
+    <li>onInterceptTouchEvent：仅 ViewGroup，派发前抢票，只在 DOWN 或已有 target 时被询问</li>
+    <li>onTouchEvent：真正干活，返回值 = enabled && (clickable || longClickable)</li>
+  </ul>
+  <h2>3. mFirstTouchTarget 归属链</h2>
+  <ul>
+    <li>节点三元组：child（谁当班）+ pointerIdBits（负责哪几根手指，位图）+ next</li>
+    <li>为什么链表不是 List&lt;View&gt;：归属粒度是手指不是 View，同一 View 多指合并成 1 节点；节点数 = 正在消费的不同子 View 数</li>
+    <li>四阶段：① 空闲 null → ② 建立（DOWN 消费成功）→ ③ 中途拦截（CANCEL+摘链）→ ④ 自然结束（UP 清链）</li>
+    <li>增删：增=addTouchTarget 头插；删=clearTouchTargets（UP）、cancelChild（拦截摘单个）、removePointers（POINTER_UP 减位图）</li>
+  </ul>
+  <h2>4. 拦截机制</h2>
+  <ul>
+    <li>action==DOWN || target!=null 为什么是 ‖：&& 会把 DOWN 踢出拦截判断 → 恒自吞 → 子 View 永远收不到事件</li>
+    <li>无 target 时 intercepted=true 直接赋值：无对象可抢，调回调纯浪费；true = "无处可去、必然由我接管"</li>
+    <li>拦截完整链路：拦 → 给旧 target 发 CANCEL → 摘链 → 自己走 child=null 分支接管（下一拍生效）</li>
+  </ul>
+  <h2>5. CANCEL 语义</h2>
+  <ul>
+    <li>UP = 正常完成（触发 performClick）；CANCEL = 被外部夺走（不触发 click）</li>
+    <li>拦截改发 UP 的两个 Bug：滚动误触点击、子父状态错乱</li>
+    <li>Button 收到 CANCEL：setPressed(false) + removeLongPressCallback()，绝不 performClick</li>
+  </ul>
+  <h2>6. 禁拦令</h2>
+  <ul>
+    <li>requestDisallowInterceptTouchEvent：逐层上传；每个 DOWN 被 resetTouchState 清除（新手势必须重设）；一拍延迟</li>
+    <li>cancelAndClearTouchTargets 管"人"（发 CANCEL+清链）；resetTouchState 管"开关"（清禁拦令、嵌套滚动轴）</li>
+  </ul>
+  <h2>7. 滑动冲突两套解法</h2>
+  <ul>
+    <li>外部拦截法（父主导）：RecyclerView 状态机——DOWN 放行重置基准；MOVE 破 touchSlop 且 canScroll 才拦；拦后锁定；POINTER_UP 切基准手指</li>
+    <li>事后盖章：scrollByInternal 真滚了才设禁拦令，不在 DOWN 提前占座</li>
+    <li>内部拦截法（子主导）：DOWN 设禁拦 → MOVE 让权则解禁；必须 return super.dispatchTouchEvent</li>
+    <li>return true = 有名无实（内部没建链）；return false = 不声称也不实干；return super = 实干+如实上报</li>
+    <li>super 的语义：调父类(ViewGroup)的方法处理自己的子树，方向向下；类的爸爸 ≠ 视图的爸爸</li>
+  </ul>
+  <h2>8. 经典场景</h2>
+  <ul>
+    <li>item 不可点：RV 空链自当大 View 直接滚；item 可点：链建 item 上，破 slop 拦截+CANCEL；轻点触发 click / 拖动滚动优先</li>
+    <li>ViewPager+横向 RV：让权=父 onIntercept 全程 false、RV 滚到底；拦截=某拍父 true → RV 收 CANCEL → 父 onTouchEvent 接管；父在 UP 也会被问一次</li>
+  </ul>
+  <h2>9. 陷阱清单</h2>
+  <ul>
+    <li>‖ 改 && → 子 View 收不到事件</li>
+    <li>return true 不 return super → MOVE 断层</li>
+    <li>super 误当父 View</li>
+    <li>拦截时发 UP 不发 CANCEL → 误触 click</li>
+    <li>禁拦令设一次不管 → DOWN 会清零</li>
+    <li>无 target 期待 onIntercept 被调 → 不会</li>
+  </ul>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/markmap-autoloader@0.18"></script>
+<script>
+  // CDN 失败降级：超时未渲染出 svg 时切换到纯文本大纲
+  window.addEventListener('load', function () {
+    setTimeout(function () {
+      var svg = document.querySelector('#mindmap-container svg');
+      if (!svg) {
+        document.getElementById('mindmap-container').style.display = 'none';
+        document.getElementById('fallback').classList.add('show');
+        document.getElementById('fallback-note').classList.add('show');
+      }
+    }, 4000);
+  });
+</script>
+</body>
+</html>
